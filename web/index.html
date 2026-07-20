@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self'; img-src 'self' data: blob:; script-src 'self'; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'self'">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#f5f6f7">
+  <title>五子棋搜索分析器</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i></span>
+      <div>
+        <h1>五子棋搜索分析器</h1>
+        <p>Alpha-Beta 局面工作台</p>
+      </div>
+    </div>
+    <div class="header-actions">
+      <button class="button button-quiet" id="importButton" type="button">
+        <span aria-hidden="true">&#8593;</span> 导入
+      </button>
+      <button class="button button-quiet" id="exportButton" type="button">
+        <span aria-hidden="true">&#8595;</span> 导出
+      </button>
+      <span class="connection-status" id="connectionStatus" data-state="idle">
+        <i aria-hidden="true"></i><span>就绪</span>
+      </span>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <section class="board-workspace" aria-labelledby="positionHeading">
+      <div class="section-heading">
+        <div>
+          <h2 id="positionHeading">局面编辑</h2>
+          <p id="stoneCount">黑 0 · 白 0 · 共 0 手</p>
+        </div>
+        <div class="history-actions" aria-label="历史操作">
+          <label class="move-number-toggle" for="showMoveNumbersInput" title="显示手数">
+            <span>手数</span>
+            <span class="switch switch-compact">
+              <input id="showMoveNumbersInput" type="checkbox" checked>
+              <i aria-hidden="true"></i>
+            </span>
+          </label>
+          <button class="icon-button" id="undoButton" type="button" title="撤销" aria-label="撤销" disabled>&#8630;</button>
+          <button class="icon-button" id="redoButton" type="button" title="重做" aria-label="重做" disabled>&#8631;</button>
+          <button class="icon-button danger-hover" id="clearButton" type="button" title="清空棋盘" aria-label="清空棋盘">&#10005;</button>
+        </div>
+      </div>
+
+      <div class="board-frame" id="boardFrame">
+        <canvas id="boardCanvas" role="img" aria-label="十五路五子棋棋盘，可点击交叉点编辑局面"></canvas>
+      </div>
+
+      <div class="board-toolbar">
+        <fieldset class="control-group stone-tools">
+          <legend>落子工具</legend>
+          <div class="segmented segmented-tools" id="stoneToolControl">
+            <button type="button" data-tool="black" class="is-selected" aria-pressed="true">
+              <i class="stone-swatch black" aria-hidden="true"></i>黑棋
+            </button>
+            <button type="button" data-tool="white" aria-pressed="false">
+              <i class="stone-swatch white" aria-hidden="true"></i>白棋
+            </button>
+            <button type="button" data-tool="erase" aria-pressed="false">
+              <span class="erase-symbol" aria-hidden="true">&#8998;</span>擦除
+            </button>
+          </div>
+        </fieldset>
+
+        <div class="board-readout" aria-live="polite">
+          <span id="cursorCoordinate">坐标 --</span>
+          <span class="readout-divider" aria-hidden="true"></span>
+          <span id="lastMoveText">末手 --</span>
+        </div>
+      </div>
+    </section>
+
+    <aside class="control-panel" aria-labelledby="settingsHeading">
+      <div class="panel-heading">
+        <h2 id="settingsHeading">分析设置</h2>
+        <span class="position-hash" id="positionHash">空棋盘</span>
+      </div>
+
+      <div class="mode-tabs segmented" id="modeTabs" aria-label="工作模式">
+        <button type="button" data-mode="analysis" class="is-selected" aria-pressed="true">分析</button>
+        <button type="button" data-mode="game" aria-pressed="false">对弈</button>
+      </div>
+
+      <div class="settings-body" id="analysisSettings">
+        <fieldset class="control-group">
+          <legend>规则</legend>
+          <div class="segmented" id="ruleControl">
+            <button type="button" data-value="freestyle" class="is-selected" aria-pressed="true">无禁手</button>
+            <button type="button" data-value="renju" aria-pressed="false">有禁手</button>
+          </div>
+        </fieldset>
+
+        <fieldset class="control-group">
+          <legend>当前行棋方</legend>
+          <div class="segmented side-control" id="sideControl">
+            <button type="button" data-value="black" class="is-selected" aria-pressed="true">
+              <i class="stone-swatch black" aria-hidden="true"></i>黑方
+            </button>
+            <button type="button" data-value="white" aria-pressed="false">
+              <i class="stone-swatch white" aria-hidden="true"></i>白方
+            </button>
+          </div>
+        </fieldset>
+
+        <label class="toggle-row" for="autoTurnInput">
+          <span>
+            <strong>自动换手</strong>
+          </span>
+          <span class="switch">
+            <input id="autoTurnInput" type="checkbox" checked>
+            <i aria-hidden="true"></i>
+          </span>
+        </label>
+
+        <label class="toggle-row" for="infiniteAnalysisInput">
+          <span>
+            <strong>无限分析</strong>
+          </span>
+          <span class="switch">
+            <input id="infiniteAnalysisInput" type="checkbox">
+            <i aria-hidden="true"></i>
+          </span>
+        </label>
+
+        <div class="settings-divider"></div>
+
+        <div class="numeric-grid">
+          <label class="number-field">
+            <span>时间上限</span>
+            <span class="input-shell">
+              <input id="timeLimitInput" type="number" min="0.1" max="30" step="0.5" value="2" inputmode="decimal">
+              <i>秒</i>
+            </span>
+          </label>
+          <label class="number-field">
+            <span>搜索深度</span>
+            <span class="input-shell">
+              <input id="maxDepthInput" type="number" min="1" max="16" step="1" value="5" inputmode="numeric">
+              <i>层</i>
+            </span>
+          </label>
+          <label class="number-field">
+            <span>杀棋深度</span>
+            <span class="input-shell">
+              <input id="threatDepthInput" type="number" min="1" max="17" step="1" value="9" inputmode="numeric">
+              <i>层</i>
+            </span>
+          </label>
+        </div>
+
+        <div class="analysis-actions">
+          <button class="button button-primary" id="analyzeButton" type="button">
+            <span class="play-icon" aria-hidden="true"></span>
+            开始分析
+          </button>
+          <button class="button button-stop" id="stopButton" type="button" hidden>
+            <span class="stop-icon" aria-hidden="true"></span>
+            停止
+          </button>
+        </div>
+      </div>
+
+      <div class="settings-body game-settings" id="gameSettings" hidden>
+        <fieldset class="control-group">
+          <legend>规则</legend>
+          <div class="segmented" id="gameRuleControl">
+            <button type="button" data-value="freestyle" class="is-selected" aria-pressed="true">无禁手</button>
+            <button type="button" data-value="renju" aria-pressed="false">有禁手</button>
+          </div>
+        </fieldset>
+
+        <fieldset class="control-group">
+          <legend>当前行棋方</legend>
+          <div class="segmented side-control" id="gameSideControl">
+            <button type="button" data-value="black" class="is-selected" aria-pressed="true">
+              <i class="stone-swatch black" aria-hidden="true"></i>黑方
+            </button>
+            <button type="button" data-value="white" aria-pressed="false">
+              <i class="stone-swatch white" aria-hidden="true"></i>白方
+            </button>
+          </div>
+        </fieldset>
+
+        <div class="player-settings">
+          <section class="player-setting" aria-labelledby="blackPlayerHeading">
+            <div class="player-setting-heading">
+              <strong id="blackPlayerHeading"><i class="stone-swatch black" aria-hidden="true"></i>黑方</strong>
+              <div class="segmented player-type-control" id="blackPlayerControl">
+                <button type="button" data-value="human" class="is-selected" aria-pressed="true">玩家</button>
+                <button type="button" data-value="engine" aria-pressed="false">引擎</button>
+              </div>
+            </div>
+            <div class="clock-inputs">
+              <label class="number-field">
+                <span>初始时间</span>
+                <span class="input-shell">
+                  <input id="blackInitialInput" type="number" min="0.1" max="180" step="0.5" value="5" inputmode="decimal">
+                  <i>分</i>
+                </span>
+              </label>
+              <label class="number-field">
+                <span>每步加时</span>
+                <span class="input-shell">
+                  <input id="blackIncrementInput" type="number" min="0" max="60" step="1" value="3" inputmode="numeric">
+                  <i>秒</i>
+                </span>
+              </label>
+            </div>
+          </section>
+
+          <section class="player-setting" aria-labelledby="whitePlayerHeading">
+            <div class="player-setting-heading">
+              <strong id="whitePlayerHeading"><i class="stone-swatch white" aria-hidden="true"></i>白方</strong>
+              <div class="segmented player-type-control" id="whitePlayerControl">
+                <button type="button" data-value="human" class="is-selected" aria-pressed="true">玩家</button>
+                <button type="button" data-value="engine" aria-pressed="false">引擎</button>
+              </div>
+            </div>
+            <div class="clock-inputs">
+              <label class="number-field">
+                <span>初始时间</span>
+                <span class="input-shell">
+                  <input id="whiteInitialInput" type="number" min="0.1" max="180" step="0.5" value="5" inputmode="decimal">
+                  <i>分</i>
+                </span>
+              </label>
+              <label class="number-field">
+                <span>每步加时</span>
+                <span class="input-shell">
+                  <input id="whiteIncrementInput" type="number" min="0" max="60" step="1" value="3" inputmode="numeric">
+                  <i>秒</i>
+                </span>
+              </label>
+            </div>
+          </section>
+        </div>
+
+        <div class="game-actions">
+          <button class="button button-primary" id="startGameButton" type="button">
+            <span class="play-icon" aria-hidden="true"></span>
+            开始对弈
+          </button>
+          <button class="button button-quiet" id="pauseGameButton" type="button" hidden>暂停</button>
+          <button class="button button-stop" id="endGameButton" type="button" hidden>
+            <span class="stop-icon" aria-hidden="true"></span>
+            结束
+          </button>
+        </div>
+      </div>
+    </aside>
+
+    <section class="results-panel" aria-labelledby="resultsHeading">
+      <div class="panel-heading results-heading">
+        <div>
+          <h2 id="resultsHeading">分析结果</h2>
+          <p id="resultSubtitle">等待开始分析</p>
+        </div>
+        <span class="result-kind" id="resultKind" hidden></span>
+      </div>
+
+      <div id="analysisResults">
+        <div class="empty-state" id="emptyState">
+          <div class="mini-board" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+          <strong>尚无分析结果</strong>
+          <p>当前局面尚未搜索</p>
+        </div>
+
+        <div class="loading-state" id="loadingState" hidden aria-live="polite">
+          <div class="search-visual" aria-hidden="true"><i></i><i></i><i></i></div>
+          <strong>正在搜索局面</strong>
+          <p id="loadingDetail">初始化 Alpha-Beta 搜索...</p>
+          <div class="loading-track"><i></i></div>
+        </div>
+
+        <div class="error-state" id="errorState" hidden role="alert">
+          <span class="error-icon" aria-hidden="true">!</span>
+          <div>
+            <strong>分析请求失败</strong>
+            <p id="errorMessage"></p>
+          </div>
+        </div>
+
+        <div class="result-content" id="resultContent" hidden>
+          <section class="verdict-block" id="verdictBlock">
+            <div class="verdict-main">
+              <span class="verdict-label" id="verdictLabel">局面评估</span>
+              <strong id="verdictValue">均势</strong>
+              <p id="verdictNote"></p>
+            </div>
+            <div class="best-move-box">
+              <span>最佳着法</span>
+              <button id="bestMoveButton" type="button" title="在棋盘上定位最佳着法">--</button>
+            </div>
+          </section>
+
+          <section class="winrate-block" id="winrateBlock">
+            <div class="winrate-labels">
+              <span><i class="stone-swatch black" aria-hidden="true"></i>黑方 <strong id="blackWinRate">50.0%</strong></span>
+              <span><strong id="whiteWinRate">50.0%</strong> 白方<i class="stone-swatch white" aria-hidden="true"></i></span>
+            </div>
+            <div class="winrate-bar" aria-label="双方胜率">
+              <i id="blackWinBar"></i><i id="whiteWinBar"></i>
+            </div>
+          </section>
+
+          <section class="result-section">
+            <div class="result-section-heading">
+              <h3 id="pvTitle">主变化</h3>
+              <div class="pv-heading-actions">
+                <button id="backToMainPvButton" type="button" hidden>返回主变化</button>
+                <span id="pvDepth"></span>
+              </div>
+            </div>
+            <div class="pv-line" id="pvLine"></div>
+          </section>
+
+          <section class="result-section candidates-section">
+            <div class="result-section-heading">
+              <h3>候选着法</h3>
+              <span id="candidateCount"></span>
+            </div>
+            <div class="candidate-list" id="candidateList"></div>
+          </section>
+
+          <section class="stats-section">
+            <div><span>节点</span><strong id="statNodes">--</strong></div>
+            <div><span>深度</span><strong id="statDepth">--</strong></div>
+            <div><span>用时</span><strong id="statTime">--</strong></div>
+            <div><span>剪枝</span><strong id="statCutoffs">--</strong></div>
+            <div><span>置换命中</span><strong id="statTtHits">--</strong></div>
+            <div><span>NPS</span><strong id="statNps">--</strong></div>
+          </section>
+        </div>
+      </div>
+
+      <div class="game-result-content" id="gameResultContent" hidden>
+        <section class="game-clocks" aria-label="双方用时">
+          <div class="game-clock" id="blackClockBox" data-side="black">
+            <span><i class="stone-swatch black" aria-hidden="true"></i>黑方 <small id="blackPlayerLabel">玩家</small></span>
+            <strong id="blackClock">05:00</strong>
+          </div>
+          <div class="game-clock" id="whiteClockBox" data-side="white">
+            <span><i class="stone-swatch white" aria-hidden="true"></i>白方 <small id="whitePlayerLabel">玩家</small></span>
+            <strong id="whiteClock">05:00</strong>
+          </div>
+        </section>
+
+        <section class="game-status-block" aria-live="polite">
+          <div class="game-turn-mark" id="gameTurnMark"><i class="stone-swatch black" aria-hidden="true"></i></div>
+          <div>
+            <strong id="gameStatusText">尚未开始</strong>
+            <p id="gameDetailText">从当前局面开始对弈</p>
+          </div>
+        </section>
+
+        <section class="game-engine-line" id="gameEngineLine" hidden>
+          <span>引擎</span>
+          <strong id="gameEngineInfo">准备搜索</strong>
+        </section>
+
+        <section class="game-moves-section">
+          <div class="result-section-heading">
+            <h3>对局着法</h3>
+            <span id="gameMoveCount">0 手</span>
+          </div>
+          <div class="game-move-list" id="gameMoveList">
+            <p>尚无对局着法</p>
+          </div>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <div class="toast-region" id="toastRegion" aria-live="polite" aria-atomic="true"></div>
+
+  <dialog class="position-dialog" id="positionDialog">
+    <form method="dialog">
+      <div class="dialog-heading">
+        <div>
+          <h2 id="dialogTitle">导入局面</h2>
+          <p id="dialogSubtitle">JSON 或 15 行棋盘文本</p>
+        </div>
+        <button class="icon-button" value="cancel" aria-label="关闭" title="关闭">&#10005;</button>
+      </div>
+      <textarea id="positionText" spellcheck="false" aria-label="局面数据"></textarea>
+      <p class="dialog-error" id="dialogError" hidden></p>
+      <div class="dialog-actions">
+        <label class="button button-quiet file-button" id="fileButton">
+          <input id="fileInput" type="file" accept=".json,.txt,application/json,text/plain">
+          选择文件
+        </label>
+        <span class="dialog-spacer"></span>
+        <button class="button button-quiet" id="copyButton" type="button" hidden>复制</button>
+        <button class="button button-quiet" id="downloadButton" type="button" hidden>下载 JSON</button>
+        <button class="button button-primary compact" id="confirmImportButton" type="button">载入局面</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="./app.js" defer></script>
+</body>
+</html>
