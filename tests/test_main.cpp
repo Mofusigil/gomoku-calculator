@@ -2,6 +2,7 @@
 #include "server/json.h"
 #include "service/analysis_jobs.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -253,6 +254,53 @@ void testEstimatedRates() {
            "estimated rates are complementary");
 }
 
+void testOddEvenWinRateStability() {
+    Board board(Stone::Black);
+    place(board, Stone::Black, {{6, 7}, {7, 7}});
+    place(board, Stone::White, {{6, 8}, {7, 8}});
+    board.setSideToMove(Stone::Black);
+
+    SearchLimits limits;
+    limits.timeMs = 10'000;
+    limits.maxDepth = 4;
+    limits.maxMatePlies = 1;
+    limits.maxCandidates = 16;
+
+    std::vector<AnalysisResult> updates;
+    const AnalysisResult result = Analyzer{}.analyze(
+        board,
+        RuleSet::Freestyle,
+        limits,
+        [&](const AnalysisResult& update) { updates.push_back(update); });
+
+    expect(result.stats.completedDepth == 4,
+           "the odd-even regression fixture completes depth four");
+    expect(updates.size() == 4,
+           "the odd-even regression fixture publishes every depth");
+    if (updates.size() != 4) {
+        return;
+    }
+
+    expect(std::abs(updates[0].score - updates[1].score) > 10'000 &&
+               std::abs(updates[1].score - updates[2].score) > 10'000,
+           "the fixture retains the raw odd-even horizon swing");
+
+    const auto [minimum, maximum] = std::minmax_element(
+        updates.begin(), updates.end(), [](const AnalysisResult& lhs,
+                                           const AnalysisResult& rhs) {
+            return lhs.blackWinRate < rhs.blackWinRate;
+        });
+    expect(maximum->blackWinRate - minimum->blackWinRate < 0.03,
+           "paired horizon scores keep the displayed win rate stable");
+    expect(result.winRateScore != result.score,
+           "the API retains both stabilized and raw search scores");
+    expect(std::all_of(result.candidates.begin(), result.candidates.end(),
+                       [](const gomoku::CandidateResult& candidate) {
+                           return candidate.winRateScore.has_value();
+                       }),
+           "candidate win rates use paired scores as well");
+}
+
 void testSearchPerformanceRegression() {
     Board board(Stone::White);
     place(board, Stone::Black,
@@ -378,6 +426,7 @@ int main() {
         {"defense and loss", testSearchDefenseAndLoss},
         {"draw and cancellation", testDrawAndCancellation},
         {"estimated rates", testEstimatedRates},
+        {"odd-even win-rate stability", testOddEvenWinRateStability},
         {"search performance regression", testSearchPerformanceRegression},
         {"streaming and jobs", testStreamingAndJobs},
         {"JSON", testJson},

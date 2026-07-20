@@ -35,6 +35,7 @@ struct CandidateResult {
     Move move;
     int score = 0;
     std::vector<Move> principalVariation;
+    std::optional<int> winRateScore;
 };
 
 struct AnalysisResult {
@@ -47,6 +48,7 @@ struct AnalysisResult {
     std::vector<Move> principalVariation;
     std::vector<CandidateResult> candidates;
     int score = 0;
+    int winRateScore = 0;
     double blackWinRate = 0.5;
     double whiteWinRate = 0.5;
     double drawRate = 0.0;

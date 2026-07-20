@@ -391,6 +391,7 @@ json::Value analysisJson(const AnalysisResult& result, Stone rootSide) {
                                     ? moveJson(*result.bestMove)
                                     : json::Value(nullptr));
     response.emplace("score", result.score);
+    response.emplace("winRateScore", result.winRateScore);
     response.emplace("scorePerspective", stoneName(rootSide));
     response.emplace("blackWinRate", result.blackWinRate);
     response.emplace("whiteWinRate", result.whiteWinRate);
@@ -406,7 +407,7 @@ json::Value analysisJson(const AnalysisResult& result, Stone rootSide) {
     } else if (result.kind == "draw") {
         response.emplace("message", "棋盘已满，局面为和棋");
     } else {
-        response.emplace("message", "胜率由当前搜索评分映射，仅作为启发式估计");
+        response.emplace("message", "胜率由相邻搜索深度的中心评分映射，仅作为启发式估计");
     }
 
     json::Value::Array pv;
@@ -424,7 +425,9 @@ json::Value analysisJson(const AnalysisResult& result, Stone rootSide) {
         item.emplace("rank", rank++);
         item.emplace("move", moveJson(candidate.move));
         item.emplace("score", candidate.score);
-        item.emplace("winRate", candidateProbability(candidate.score));
+        const int winRateScore = candidate.winRateScore.value_or(candidate.score);
+        item.emplace("winRateScore", winRateScore);
+        item.emplace("winRate", candidateProbability(winRateScore));
         json::Value::Array candidatePv;
         candidatePv.reserve(candidate.principalVariation.size());
         for (Move move : candidate.principalVariation) {

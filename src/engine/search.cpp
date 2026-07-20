@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <numeric>
 #include <optional>
 #include <stdexcept>
 #include <unordered_map>
@@ -251,18 +252,29 @@ private:
         std::optional<Move> preferred;
         RootIteration completed;
         bool hasCompletedIteration = false;
+        // Gomoku shape scores heavily reward the horizon's last move. Centering
+        // adjacent horizons removes that systematic odd-even bias from win rates.
+        int previousScore = Evaluator::evaluate(board, rootSide, rules_);
+        int completedWinRateScore = previousScore;
+        std::vector<CandidateResult> previousCandidates;
 
         const int iterationLimit = limits_.infinite ? kMaxSearchPly : limits_.maxDepth;
         for (int depth = 1; depth <= iterationLimit; ++depth) {
             try {
                 RootIteration iteration = searchRoot(board, depth, preferred);
+                completedWinRateScore = std::midpoint(previousScore, iteration.score);
+                stabilizeCandidateScores(
+                    iteration.candidates, previousCandidates, previousScore);
                 completed = std::move(iteration);
                 hasCompletedIteration = true;
                 stats_.completedDepth = depth;
                 preferred = completed.bestMove;
-                AnalysisResult snapshot = estimateResult(completed, rootSide);
+                AnalysisResult snapshot = estimateResult(
+                    completed, rootSide, completedWinRateScore);
                 finishStats(snapshot);
                 notifyObserver(snapshot);
+                previousScore = completed.score;
+                previousCandidates = completed.candidates;
             } catch (const SearchTimeout&) {
                 stats_.timedOut = true;
                 break;
@@ -280,27 +292,51 @@ private:
                     moves.front().move,
                     completed.score,
                     {moves.front().move},
+                    std::nullopt,
                 });
             } else {
                 completed.score = 0;
             }
+            completedWinRateScore = std::midpoint(previousScore, completed.score);
+            stabilizeCandidateScores(
+                completed.candidates, previousCandidates, previousScore);
         }
 
-        AnalysisResult result = estimateResult(completed, rootSide);
+        AnalysisResult result = estimateResult(
+            completed, rootSide, completedWinRateScore);
         finishStats(result);
         return result;
     }
 
-    AnalysisResult estimateResult(const RootIteration& iteration, Stone rootSide) const {
+    static void stabilizeCandidateScores(
+        std::vector<CandidateResult>& candidates,
+        const std::vector<CandidateResult>& previousCandidates,
+        int previousRootScore) {
+        for (CandidateResult& candidate : candidates) {
+            const auto previous = std::find_if(
+                previousCandidates.begin(), previousCandidates.end(),
+                [&](const CandidateResult& prior) { return prior.move == candidate.move; });
+            const int previousScore = previous == previousCandidates.end()
+                                          ? previousRootScore
+                                          : previous->score;
+            candidate.winRateScore = std::midpoint(previousScore, candidate.score);
+        }
+    }
+
+    AnalysisResult estimateResult(
+        const RootIteration& iteration,
+        Stone rootSide,
+        int winRateScore) const {
         AnalysisResult result;
         result.kind = "evaluation";
         result.score = iteration.score;
+        result.winRateScore = winRateScore;
         if (Board::inBounds(iteration.bestMove)) {
             result.bestMove = iteration.bestMove;
         }
         result.principalVariation = iteration.pv;
         result.candidates = iteration.candidates;
-        const double rootProbability = estimatedProbability(result.score);
+        const double rootProbability = estimatedProbability(result.winRateScore);
         result.blackWinRate = rootSide == Stone::Black ? rootProbability : 1.0 - rootProbability;
         result.whiteWinRate = 1.0 - result.blackWinRate;
         return result;
@@ -376,7 +412,12 @@ private:
             candidatePv.reserve(childPv.size() + 1);
             candidatePv.push_back(move);
             candidatePv.insert(candidatePv.end(), childPv.begin(), childPv.end());
-            result.candidates.push_back({move, score, candidatePv});
+            result.candidates.push_back({
+                move,
+                score,
+                candidatePv,
+                std::nullopt,
+            });
             if (score > bestScore) {
                 bestScore = score;
                 bestMove = move;
@@ -865,6 +906,7 @@ private:
     }
 
     void assignCertainRates(AnalysisResult& result, Stone winner) const {
+        result.winRateScore = result.score;
         result.blackWinRate = winner == Stone::Black ? 1.0 : 0.0;
         result.whiteWinRate = winner == Stone::White ? 1.0 : 0.0;
     }

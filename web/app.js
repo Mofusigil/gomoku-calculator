@@ -12,6 +12,8 @@
   const ANALYSIS_STOP_TIMEOUT_MS = 2200;
   const ANALYSIS_STOP_ATTEMPTS = 3;
   const MODE_SWITCH_DEBOUNCE_MS = 80;
+  const SCORE_LOGISTIC_BOUND = 17500;
+  const SCORE_LOGISTIC_SCALE = 4500;
   const COLUMN_LABELS = "ABCDEFGHJKLMNOP";
 
   const elements = {
@@ -1274,12 +1276,14 @@
     const mateIn = Number.isFinite(Number(mateValue)) ? Math.abs(Math.trunc(Number(mateValue))) : null;
     const rawRate = candidate?.winRate ?? candidate?.win_rate ?? candidate?.probability;
     const winRate = rawRate == null ? null : normalizeRate(rawRate);
+    const winRateScore = finiteNumber(candidate?.winRateScore ?? candidate?.win_rate_score);
     const pvRaw = candidate?.pv ?? candidate?.principalVariation ?? candidate?.principal_variation ?? [];
     const pv = Array.isArray(pvRaw) ? pvRaw.map(normalizeMove).filter(Boolean) : [];
     if (!pv.length || pv[0].x !== move.x || pv[0].y !== move.y) pv.unshift({ ...move });
     return {
       move,
       score: finiteNumber(candidate?.score ?? candidate?.evaluation ?? candidate?.eval),
+      winRateScore,
       winRate,
       mateIn,
       rank: finiteNumber(candidate?.rank) || index + 1,
@@ -1295,10 +1299,10 @@
     white = white == null ? null : normalizeRate(white);
 
     if (black == null && white == null) {
-      const score = finiteNumber(raw.evaluation ?? raw.eval ?? raw.score ?? raw.value);
+      const score = finiteNumber(raw.winRateScore ?? raw.win_rate_score ?? raw.evaluation ?? raw.eval ?? raw.score ?? raw.value);
       if (score != null) {
         const perspective = normalizeSide(raw.scorePerspective ?? raw.score_perspective ?? fallbackSide);
-        const sideRate = 1 / (1 + Math.exp(-score / 650));
+        const sideRate = scoreToWinRate(score);
         black = perspective === "white" ? 1 - sideRate : sideRate;
         white = 1 - black;
       } else {
@@ -1323,6 +1327,11 @@
     const number = Number(value);
     if (!Number.isFinite(number)) return 0.5;
     return clampNumber(number > 1 ? number / 100 : number, 0, 1, 0.5);
+  }
+
+  function scoreToWinRate(value) {
+    const score = clampNumber(value, -SCORE_LOGISTIC_BOUND, SCORE_LOGISTIC_BOUND, 0);
+    return 1 / (1 + Math.exp(-score / SCORE_LOGISTIC_SCALE));
   }
 
   function finiteNumber(value) {
@@ -1497,7 +1506,8 @@
 
       let meterRate = candidate.winRate;
       if (meterRate == null) {
-        if (candidate.score != null) meterRate = 1 / (1 + Math.exp(-candidate.score / 650));
+        const rateScore = candidate.winRateScore ?? candidate.score;
+        if (rateScore != null) meterRate = scoreToWinRate(rateScore);
         else meterRate = perspectiveBlack ? result.blackWinRate : result.whiteWinRate;
       }
       const meter = document.createElement("span");
