@@ -12,9 +12,15 @@
   const ANALYSIS_STOP_TIMEOUT_MS = 2200;
   const ANALYSIS_STOP_ATTEMPTS = 3;
   const MODE_SWITCH_DEBOUNCE_MS = 80;
+  const ENGINE_MAX_SEARCH_DEPTH = 16;
+  const ENGINE_MAX_MOVE_TIME_MS = 30000;
   const SCORE_LOGISTIC_BOUND = 17500;
   const SCORE_LOGISTIC_SCALE = 4500;
   const COLUMN_LABELS = "ABCDEFGHJKLMNOP";
+  const INITIAL_TIME_UNIT_CONFIGS = {
+    minutes: { multiplier: 60000, min: 0.016667, max: 180, step: "any", fallback: 5, label: "分" },
+    seconds: { multiplier: 1000, min: 1, max: 10800, step: 1, fallback: 300, label: "秒" }
+  };
 
   const elements = {
     canvas: document.getElementById("boardCanvas"),
@@ -45,8 +51,12 @@
     stopButton: document.getElementById("stopButton"),
     blackPlayerControl: document.getElementById("blackPlayerControl"),
     whitePlayerControl: document.getElementById("whitePlayerControl"),
+    blackInitialUnitControl: document.getElementById("blackInitialUnitControl"),
+    blackInitialUnitLabel: document.getElementById("blackInitialUnitLabel"),
     blackInitialInput: document.getElementById("blackInitialInput"),
     blackIncrementInput: document.getElementById("blackIncrementInput"),
+    whiteInitialUnitControl: document.getElementById("whiteInitialUnitControl"),
+    whiteInitialUnitLabel: document.getElementById("whiteInitialUnitLabel"),
     whiteInitialInput: document.getElementById("whiteInitialInput"),
     whiteIncrementInput: document.getElementById("whiteIncrementInput"),
     startGameButton: document.getElementById("startGameButton"),
@@ -148,6 +158,7 @@
     game: {
       status: "idle",
       players: { black: "human", white: "human" },
+      initialUnits: { black: "minutes", white: "minutes" },
       clocks: { black: 300000, white: 300000 },
       increments: { black: 3000, white: 3000 },
       turnStartedAt: null,
@@ -254,6 +265,8 @@
     syncSegment(elements.gameSideControl, "value", state.sideToMove);
     syncSegment(elements.blackPlayerControl, "value", state.game.players.black);
     syncSegment(elements.whitePlayerControl, "value", state.game.players.white);
+    syncSegment(elements.blackInitialUnitControl, "unit", state.game.initialUnits.black);
+    syncSegment(elements.whiteInitialUnitControl, "unit", state.game.initialUnits.white);
   }
 
   function syncSegment(container, key, selectedValue) {
@@ -1952,8 +1965,8 @@
     state.game.engineThinking = false;
     state.game.inputPending = false;
     state.game.transitioning = false;
-    state.game.clocks.black = Math.round(clampNumber(elements.blackInitialInput.value, 0.1, 180, 5) * 60000);
-    state.game.clocks.white = Math.round(clampNumber(elements.whiteInitialInput.value, 0.1, 180, 5) * 60000);
+    state.game.clocks.black = readInitialTimeMs("black");
+    state.game.clocks.white = readInitialTimeMs("white");
     state.game.increments.black = Math.round(clampNumber(elements.blackIncrementInput.value, 0, 60, 3) * 1000);
     state.game.increments.white = Math.round(clampNumber(elements.whiteIncrementInput.value, 0, 60, 3) * 1000);
     normalizeGameInputs();
@@ -2040,8 +2053,8 @@
     state.game.inputPending = false;
     state.game.transitioning = false;
     state.game.turnStartedAt = null;
-    state.game.clocks.black = Math.round(clampNumber(elements.blackInitialInput.value, 0.1, 180, 5) * 60000);
-    state.game.clocks.white = Math.round(clampNumber(elements.whiteInitialInput.value, 0.1, 180, 5) * 60000);
+    state.game.clocks.black = readInitialTimeMs("black");
+    state.game.clocks.white = readInitialTimeMs("white");
     if (update) {
       renderGameState();
       updateInteractionUi();
@@ -2129,6 +2142,7 @@
     syncControls();
     renderGameState();
     drawBoard();
+    setConnection("ok", "对局进行中");
     scheduleEngineTurn();
   }
 
@@ -2184,22 +2198,30 @@
       flagOnTime(side);
       return;
     }
-    const budget = engineMoveBudget(side, remaining);
-    const payload = analysisPayload({ timeLimitMs: budget, infinite: false, candidateLimit: 8 });
+    const plan = engineMovePlan(side, remaining);
+    const payload = analysisPayload({
+      timeLimitMs: plan.timeMs,
+      maxDepth: ENGINE_MAX_SEARCH_DEPTH,
+      threatDepth: plan.threatDepth,
+      candidateLimit: plan.candidateLimit,
+      infinite: false
+    });
     const key = payloadPositionKey(payload);
     state.game.engineThinking = true;
     state.bestMove = null;
     renderGameState();
+    elements.gameEngineInfo.textContent = `${plan.label} · 预算 ${formatDuration(plan.timeMs)} · D${ENGINE_MAX_SEARCH_DEPTH}`;
     setConnection("busy", `${sideName(side)}引擎思考`);
 
     try {
       const outcome = await runSearchJob(payload, "game", (result) => {
-        const retained = cacheAnalysisResult(key, result, payload.options);
+        cacheAnalysisResult(key, result, payload.options);
         if (generation !== state.game.generation || state.sideToMove !== side) return;
-        state.bestMove = retained.bestMove;
+        state.bestMove = result.bestMove;
         const depth = result.stats.depth == null ? "--" : Math.trunc(result.stats.depth);
         const nodes = formatCompact(result.stats.nodes);
-        elements.gameEngineInfo.textContent = `深度 ${depth} · ${nodes} 节点 · ${moveLabel(retained.bestMove)}`;
+        const elapsed = formatDuration(result.stats.elapsedMs);
+        elements.gameEngineInfo.textContent = `${plan.label} · ${elapsed}/${formatDuration(plan.timeMs)} · D${depth} · ${nodes} · ${moveLabel(result.bestMove)}`;
         drawBoard();
       });
       if (outcome.cancelled || generation !== state.game.generation || state.game.status !== "running" || state.sideToMove !== side) return;
@@ -2207,7 +2229,8 @@
         finishGame(null, `${sideName(side)}引擎未返回结果`);
         return;
       }
-      const result = cacheAnalysisResult(key, outcome.result, payload.options);
+      cacheAnalysisResult(key, outcome.result, payload.options);
+      const result = outcome.result;
       state.bestMove = result.bestMove;
       const choices = uniqueMoves([result.bestMove, ...result.candidates.map((candidate) => candidate.move)]);
       let selected = null;
@@ -2250,12 +2273,162 @@
     });
   }
 
-  function engineMoveBudget(side, remaining) {
+  function engineMovePlan(side, remaining) {
+    const profile = enginePositionProfile(side);
     const increment = state.game.increments[side];
-    const reserve = Math.min(1200, remaining * 0.08);
-    const available = Math.max(100, remaining - reserve);
-    const allocation = remaining / 18 + increment * 0.8;
-    return Math.max(100, Math.floor(Math.min(30000, available, allocation)));
+    const movesToGo = estimatedEngineMovesToGo(profile.occupied);
+    const reserveTarget = Math.max(250, Math.min(5000, remaining * 0.07));
+    const reserve = Math.min(reserveTarget, Math.max(0, remaining - 50));
+    const available = Math.max(50, remaining - reserve);
+    const base = available / movesToGo + increment * 0.75;
+    const minimum = profile.quick ? 80 : remaining >= 60000 ? 600 : remaining >= 10000 ? 250 : 80;
+    const timeFraction = remaining < 5000 ? 0.12 : remaining < 15000 ? 0.2 : remaining < 60000 ? 0.16 : 0.12;
+    let cap = Math.min(
+      ENGINE_MAX_MOVE_TIME_MS,
+      available,
+      Math.max(50, remaining * timeFraction + increment * 0.5)
+    );
+    let target = Math.max(minimum, base * (0.65 + profile.complexity * 1.45));
+
+    if (profile.opening) {
+      cap = Math.min(cap, Math.min(3000, 600 + increment * 0.5));
+      target = Math.min(target, cap);
+    } else if (profile.quick) {
+      cap = Math.min(cap, Math.min(600, 150 + increment * 0.1));
+      target = Math.min(target, cap);
+    }
+
+    const timeMs = Math.max(50, Math.floor(Math.min(cap, target)));
+    const candidateLimit = profile.quick || profile.opening ? 8
+      : profile.complexity >= 0.75 ? 24
+        : profile.complexity >= 0.5 ? 20
+          : profile.complexity >= 0.3 ? 16 : 12;
+    const threatDepth = profile.quick ? 9
+      : profile.complexity >= 0.72 ? 13
+        : profile.complexity >= 0.45 ? 11 : 9;
+    return { timeMs, candidateLimit, threatDepth, label: profile.label };
+  }
+
+  function estimatedEngineMovesToGo(occupied) {
+    if (occupied < 10) return 24;
+    if (occupied < 30) return 20;
+    if (occupied < 60) return 16;
+    if (occupied < 100) return 12;
+    return 8;
+  }
+
+  function enginePositionProfile(side) {
+    const occupied = state.board.reduce(
+      (total, row) => total + row.reduce((count, cell) => count + (cell === EMPTY ? 0 : 1), 0),
+      0
+    );
+    const opening = occupied < 4;
+    const candidates = engineCandidateMoves();
+    const ownColor = side === "black" ? BLACK : WHITE;
+    const opponentColor = ownColor === BLACK ? WHITE : BLACK;
+    let ownWins = 0;
+    let opponentWins = 0;
+    let tacticalMoves = 0;
+    let forcingMoves = 0;
+    let contestedMoves = 0;
+    let pressure = 0;
+
+    candidates.forEach((move) => {
+      ownWins += isWinningPlacementLocal(move, ownColor) ? 1 : 0;
+      opponentWins += isWinningPlacementLocal(move, opponentColor) ? 1 : 0;
+      const ownThreat = engineMoveThreatValue(move, ownColor);
+      const opponentThreat = engineMoveThreatValue(move, opponentColor);
+      const strongest = Math.max(ownThreat.strongest, opponentThreat.strongest);
+      if (strongest >= 8) tacticalMoves += 1;
+      if (strongest >= 42) forcingMoves += 1;
+      if (ownThreat.total >= 5 && opponentThreat.total >= 5) contestedMoves += 1;
+      pressure += Math.min(120, ownThreat.total + opponentThreat.total);
+    });
+
+    if (ownWins > 0) {
+      return { occupied, opening: false, quick: true, complexity: 0.05, label: "胜点" };
+    }
+    if (opponentWins > 0) {
+      return {
+        occupied,
+        opening: false,
+        quick: true,
+        complexity: opponentWins > 1 ? 0.12 : 0.18,
+        label: opponentWins > 1 ? "多重威胁" : "强制应对"
+      };
+    }
+    if (opening) {
+      return { occupied, opening: true, quick: false, complexity: 0.08, label: "开局" };
+    }
+
+    let complexity = 0.1;
+    complexity += occupied < 12 ? 0.14 : occupied < 70 ? 0.28 : occupied < 120 ? 0.2 : 0.1;
+    complexity += clampNumber((candidates.length - 8) / 56, 0, 1, 0) * 0.28;
+    complexity += clampNumber(tacticalMoves / 10, 0, 1, 0) * 0.2;
+    complexity += clampNumber(forcingMoves / 5, 0, 1, 0) * 0.14;
+    complexity += clampNumber(contestedMoves / 12, 0, 1, 0) * 0.08;
+    complexity += clampNumber(pressure / Math.max(1, candidates.length * 50), 0, 1, 0) * 0.08;
+    complexity = clampNumber(complexity, 0, 1, 0.4);
+
+    const label = complexity >= 0.72 ? "复杂"
+      : complexity >= 0.5 ? "战术"
+        : complexity >= 0.3 ? "常规" : "简明";
+    return { occupied, opening: false, quick: false, complexity, label };
+  }
+
+  function engineCandidateMoves() {
+    const occupiedMoves = [];
+    for (let y = 0; y < BOARD_SIZE; y += 1) {
+      for (let x = 0; x < BOARD_SIZE; x += 1) {
+        if (state.board[y][x] !== EMPTY) occupiedMoves.push({ x, y });
+      }
+    }
+    if (!occupiedMoves.length) {
+      return [{ x: Math.floor(BOARD_SIZE / 2), y: Math.floor(BOARD_SIZE / 2) }];
+    }
+
+    const candidateIndexes = new Set();
+    occupiedMoves.forEach((occupied) => {
+      for (let dy = -2; dy <= 2; dy += 1) {
+        for (let dx = -2; dx <= 2; dx += 1) {
+          const x = occupied.x + dx;
+          const y = occupied.y + dy;
+          if ((dx === 0 && dy === 0) || x < 0 || x >= BOARD_SIZE || y < 0 || y >= BOARD_SIZE) continue;
+          if (state.board[y][x] === EMPTY) candidateIndexes.add(y * BOARD_SIZE + x);
+        }
+      }
+    });
+    return Array.from(candidateIndexes, (index) => ({ x: index % BOARD_SIZE, y: Math.floor(index / BOARD_SIZE) }));
+  }
+
+  function engineMoveThreatValue(move, color) {
+    const directions = [[1, 0], [0, 1], [1, 1], [1, -1]];
+    let total = 0;
+    let strongest = 0;
+    directions.forEach(([dx, dy]) => {
+      const left = countDirection(move, color, -dx, -dy);
+      const right = countDirection(move, color, dx, dy);
+      const length = left + 1 + right;
+      let openEnds = 0;
+      const beforeX = move.x - (left + 1) * dx;
+      const beforeY = move.y - (left + 1) * dy;
+      const afterX = move.x + (right + 1) * dx;
+      const afterY = move.y + (right + 1) * dy;
+      if (beforeX >= 0 && beforeX < BOARD_SIZE && beforeY >= 0 && beforeY < BOARD_SIZE
+          && state.board[beforeY][beforeX] === EMPTY) openEnds += 1;
+      if (afterX >= 0 && afterX < BOARD_SIZE && afterY >= 0 && afterY < BOARD_SIZE
+          && state.board[afterY][afterX] === EMPTY) openEnds += 1;
+
+      let value = 0;
+      if (length >= 5) value = 100;
+      else if (length === 4) value = openEnds === 2 ? 64 : 42;
+      else if (length === 3) value = openEnds === 2 ? 18 : 8;
+      else if (length === 2) value = openEnds === 2 ? 5 : 2;
+      else if (openEnds === 2) value = 1;
+      total += value;
+      strongest = Math.max(strongest, value);
+    });
+    return { total, strongest };
   }
 
   function consumeCurrentClock() {
@@ -2420,6 +2593,9 @@
     [elements.blackPlayerControl, elements.whitePlayerControl].forEach((control) => {
       control.querySelectorAll("button").forEach((button) => { button.disabled = active; });
     });
+    [elements.blackInitialUnitControl, elements.whiteInitialUnitControl].forEach((control) => {
+      control.querySelectorAll("button").forEach((button) => { button.disabled = active; });
+    });
   }
 
   function updateInteractionUi() {
@@ -2434,16 +2610,68 @@
   }
 
   function normalizeGameInputs() {
-    elements.blackInitialInput.value = String(state.game.clocks.black / 60000);
-    elements.whiteInitialInput.value = String(state.game.clocks.white / 60000);
+    for (const side of ["black", "white"]) {
+      configureInitialTimeInput(side);
+      const { input } = initialTimeElements(side);
+      const config = INITIAL_TIME_UNIT_CONFIGS[state.game.initialUnits[side]];
+      input.value = formatInitialTimeValue(state.game.clocks[side] / config.multiplier);
+    }
     elements.blackIncrementInput.value = String(state.game.increments.black / 1000);
     elements.whiteIncrementInput.value = String(state.game.increments.white / 1000);
   }
 
+  function initialTimeElements(side) {
+    return side === "white"
+      ? {
+          input: elements.whiteInitialInput,
+          label: elements.whiteInitialUnitLabel
+        }
+      : {
+          input: elements.blackInitialInput,
+          label: elements.blackInitialUnitLabel
+        };
+  }
+
+  function configureInitialTimeInput(side) {
+    const unit = state.game.initialUnits[side];
+    const config = INITIAL_TIME_UNIT_CONFIGS[unit];
+    const { input, label } = initialTimeElements(side);
+    input.min = String(config.min);
+    input.max = String(config.max);
+    input.step = String(config.step);
+    input.inputMode = unit === "seconds" ? "numeric" : "decimal";
+    label.textContent = config.label;
+  }
+
+  function readInitialTimeMs(side) {
+    const config = INITIAL_TIME_UNIT_CONFIGS[state.game.initialUnits[side]];
+    const { input } = initialTimeElements(side);
+    const value = clampNumber(input.value, config.min, config.max, config.fallback);
+    return Math.round(value * config.multiplier);
+  }
+
+  function formatInitialTimeValue(value) {
+    return String(Number(value.toFixed(6)));
+  }
+
+  function setInitialTimeUnit(side, nextUnit) {
+    if (["running", "paused"].includes(state.game.status)) return;
+    const unit = nextUnit === "seconds" ? "seconds" : "minutes";
+    if (unit === state.game.initialUnits[side]) return;
+    const milliseconds = readInitialTimeMs(side);
+    state.game.initialUnits[side] = unit;
+    configureInitialTimeInput(side);
+    const { input } = initialTimeElements(side);
+    input.value = formatInitialTimeValue(milliseconds / INITIAL_TIME_UNIT_CONFIGS[unit].multiplier);
+    state.game.clocks[side] = milliseconds;
+    syncControls();
+    updateGameClocks();
+  }
+
   function previewIdleClocks() {
     if (state.game.status !== "idle" && state.game.status !== "ended") return;
-    state.game.clocks.black = Math.round(clampNumber(elements.blackInitialInput.value, 0.1, 180, 5) * 60000);
-    state.game.clocks.white = Math.round(clampNumber(elements.whiteInitialInput.value, 0.1, 180, 5) * 60000);
+    state.game.clocks.black = readInitialTimeMs("black");
+    state.game.clocks.white = readInitialTimeMs("white");
     updateGameClocks();
   }
 
@@ -2557,6 +2785,15 @@
       const button = event.target.closest("button[data-value]");
       if (button) setPlayerType("white", button.dataset.value);
     });
+    [
+      [elements.blackInitialUnitControl, "black"],
+      [elements.whiteInitialUnitControl, "white"]
+    ].forEach(([control, side]) => {
+      control.addEventListener("click", (event) => {
+        const button = event.target.closest("button[data-unit]");
+        if (button) setInitialTimeUnit(side, button.dataset.unit);
+      });
+    });
     elements.autoTurnInput.addEventListener("change", () => {
       if (elements.autoTurnInput.checked && state.tool !== "erase") {
         state.tool = state.sideToMove;
@@ -2633,6 +2870,8 @@
     window.addEventListener("resize", resizeCanvas, { passive: true });
   }
 
+  configureInitialTimeInput("black");
+  configureInitialTimeInput("white");
   syncControls();
   updatePositionMeta();
   bindEvents();

@@ -254,6 +254,31 @@ void testEstimatedRates() {
            "estimated rates are complementary");
 }
 
+void testOpeningResponseLocality() {
+    Board board(Stone::White);
+    place(board, Stone::Black, {{7, 7}});
+    board.setSideToMove(Stone::White);
+
+    SearchLimits limits;
+    limits.timeMs = 5'000;
+    limits.maxDepth = 5;
+    limits.maxMatePlies = 1;
+    limits.maxCandidates = 24;
+    const AnalysisResult result = Analyzer{}.analyze(
+        board, RuleSet::Freestyle, limits);
+
+    expect(result.bestMove.has_value(),
+           "the opening response returns a move");
+    if (!result.bestMove.has_value()) {
+        return;
+    }
+    const int distance = std::max(
+        std::abs(result.bestMove->x - 7),
+        std::abs(result.bestMove->y - 7));
+    expect(distance == 1,
+           "the first reply stays connected to the centre stone");
+}
+
 void testOddEvenWinRateStability() {
     Board board(Stone::Black);
     place(board, Stone::Black, {{6, 7}, {7, 7}});
@@ -426,6 +451,7 @@ int main() {
         {"defense and loss", testSearchDefenseAndLoss},
         {"draw and cancellation", testDrawAndCancellation},
         {"estimated rates", testEstimatedRates},
+        {"opening response locality", testOpeningResponseLocality},
         {"odd-even win-rate stability", testOddEvenWinRateStability},
         {"search performance regression", testSearchPerformanceRegression},
         {"streaming and jobs", testStreamingAndJobs},

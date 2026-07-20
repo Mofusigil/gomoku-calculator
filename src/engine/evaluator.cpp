@@ -435,7 +435,10 @@ std::vector<RankedMove> Evaluator::candidateMoves(
             opponentWinMask[move.index()] = true;
         }
     }
-    const MoveMask nearbyMask = neighbourMask(board, 2);
+    // In the opening, disconnected radius-two moves create severe horizon
+    // artifacts. Keep the first replies connected, then widen in the middlegame.
+    const int neighbourhoodRadius = board.occupiedCount() < 4 ? 1 : 2;
+    const MoveMask nearbyMask = neighbourMask(board, neighbourhoodRadius);
     ranked.reserve(64);
     board.forEachEmpty([&](Move move) {
         const bool preferredMove = preferred.has_value() && preferred.value() == move;

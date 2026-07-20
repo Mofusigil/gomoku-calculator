@@ -636,6 +636,38 @@ label:has(input:focus-visible) {
   font-weight: 650;
 }
 
+.number-field-label {
+  min-height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 7px;
+  margin-bottom: 6px;
+}
+
+.number-field-label > label {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.time-unit-control {
+  width: auto;
+  min-height: 24px;
+  grid-template-columns: repeat(2, 28px);
+  flex: 0 0 auto;
+  padding: 2px;
+  border-radius: 5px;
+}
+
+.time-unit-control button {
+  min-height: 18px;
+  padding: 0 5px;
+  font-size: 10px;
+}
+
 .input-shell {
   height: 38px;
   display: flex;
