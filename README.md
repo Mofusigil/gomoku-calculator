@@ -35,6 +35,18 @@ HTTP/JSON 服务；前端为无外部依赖的 Canvas 棋盘编辑器。
 
 要求 Linux 或其他提供 POSIX sockets 的系统、CMake 3.20+ 和支持 C++20 的编译器。
 
+Linux 桌面环境可直接运行一键启动脚本，脚本会自动编译、启动服务并打开浏览器；
+关闭所有项目网页后，服务进程也会自动退出：
+
+```bash
+./start.sh
+```
+
+默认地址为 `http://127.0.0.1:8080`。需要更换端口时可运行
+`PORT=9000 ./start.sh`。
+
+也可以手动构建与运行：
+
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j

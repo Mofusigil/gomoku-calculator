@@ -3,6 +3,7 @@
 #include "service/analysis_jobs.h"
 
 #include <algorithm>
+#include <atomic>
 #include <charconv>
 #include <chrono>
 #include <cmath>
@@ -16,6 +17,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 
 namespace {
 
@@ -55,6 +57,29 @@ struct PositionInput {
 };
 
 std::counting_semaphore<4> gAnalysisSlots(4);
+
+class BrowserSessionTracker final {
+public:
+    void connect() noexcept { active_.fetch_add(1, std::memory_order_relaxed); }
+    void disconnect() noexcept { active_.fetch_sub(1, std::memory_order_relaxed); }
+    [[nodiscard]] bool active() const noexcept {
+        return active_.load(std::memory_order_relaxed) != 0;
+    }
+
+private:
+    std::atomic<unsigned> active_{0};
+};
+
+class BrowserSession final {
+public:
+    explicit BrowserSession(BrowserSessionTracker& tracker) : tracker_(tracker) {
+        tracker_.connect();
+    }
+    ~BrowserSession() { tracker_.disconnect(); }
+
+private:
+    BrowserSessionTracker& tracker_;
+};
 
 class AnalysisSlot final {
 public:
@@ -617,6 +642,28 @@ HttpResponse handleForbidden(const HttpRequest&, const json::Value& body) {
     }
 }
 
+HttpResponse handleBrowserSession(
+    BrowserSessionTracker& tracker,
+    const HttpRequest& request,
+    const json::Value&) {
+    BrowserSession session(tracker);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (request.client_disconnected && request.client_disconnected()) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+    return HttpResponse::no_content();
+}
+
+HttpResponse handleBrowserSessionStatus(
+    const BrowserSessionTracker& tracker,
+    const HttpRequest&,
+    const json::Value&) {
+    return HttpResponse::no_content(tracker.active() ? 200 : 204);
+}
+
 struct CommandLine {
     std::string bindAddress = "127.0.0.1";
     std::uint16_t port = 8080;
@@ -671,6 +718,7 @@ int main(int argc, char** argv) {
         options.io_timeout = std::chrono::milliseconds(35'000);
 
         AnalysisJobManager jobs;
+        BrowserSessionTracker browserSessions;
         HttpServer server(options);
         server.add_post_route("/api/analyze", handleAnalyze);
         server.add_post_route(
@@ -689,6 +737,16 @@ int main(int argc, char** argv) {
                 return handleAnalyzeStop(jobs, request, body);
             });
         server.add_post_route("/api/forbidden", handleForbidden);
+        server.add_post_route(
+            "/api/session/hold",
+            [&browserSessions](const HttpRequest& request, const json::Value& body) {
+                return handleBrowserSession(browserSessions, request, body);
+            });
+        server.add_post_route(
+            "/api/session/status",
+            [&browserSessions](const HttpRequest& request, const json::Value& body) {
+                return handleBrowserSessionStatus(browserSessions, request, body);
+            });
         server.add_static_file("/", command.webRoot / "index.html");
         server.add_static_file("/index.html", command.webRoot / "index.html");
         server.add_static_file("/styles.css", command.webRoot / "styles.css");

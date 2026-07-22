@@ -11,6 +11,7 @@
   const ANALYSIS_POLL_TIMEOUT_MS = 15000;
   const ANALYSIS_STOP_TIMEOUT_MS = 2200;
   const ANALYSIS_STOP_ATTEMPTS = 3;
+  const BROWSER_SESSION_RETRY_MS = 250;
   const MODE_SWITCH_DEBOUNCE_MS = 80;
   const ENGINE_MAX_SEARCH_DEPTH = 16;
   const ENGINE_MAX_MOVE_TIME_MS = 30000;
@@ -176,6 +177,17 @@
 
   function createEmptyBoard() {
     return Array.from({ length: BOARD_SIZE }, () => Array(BOARD_SIZE).fill(EMPTY));
+  }
+
+  async function maintainBrowserSession() {
+    while (true) {
+      try {
+        await postJson("/api/session/hold", {}, null, 25000);
+      } catch (_) {
+        // The launcher uses this connection to detect when the page closes.
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, BROWSER_SESSION_RETRY_MS));
+    }
   }
 
   function copyBoard(board) {
@@ -2871,6 +2883,7 @@
   }
 
   configureInitialTimeInput("black");
+  void maintainBrowserSession();
   configureInitialTimeInput("white");
   syncControls();
   updatePositionMeta();
