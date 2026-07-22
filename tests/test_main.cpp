@@ -324,6 +324,17 @@ void testOddEvenWinRateStability() {
                            return candidate.winRateScore.has_value();
                        }),
            "candidate win rates use paired scores as well");
+    expect(std::all_of(
+               updates.begin(), updates.end(), [](const AnalysisResult& update) {
+                   return std::is_sorted(
+                       update.candidates.begin(), update.candidates.end(),
+                       [](const gomoku::CandidateResult& lhs,
+                          const gomoku::CandidateResult& rhs) {
+                           return lhs.winRateScore.value_or(lhs.score) >
+                                  rhs.winRateScore.value_or(rhs.score);
+                       });
+               }),
+           "streamed candidates are ordered by their displayed win rates");
 }
 
 void testSearchPerformanceRegression() {

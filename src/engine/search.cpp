@@ -321,6 +321,19 @@ private:
                                           : previous->score;
             candidate.winRateScore = std::midpoint(previousScore, candidate.score);
         }
+        std::stable_sort(
+            candidates.begin(), candidates.end(),
+            [](const CandidateResult& lhs, const CandidateResult& rhs) {
+                const int lhsWinRateScore = lhs.winRateScore.value_or(lhs.score);
+                const int rhsWinRateScore = rhs.winRateScore.value_or(rhs.score);
+                if (lhsWinRateScore != rhsWinRateScore) {
+                    return lhsWinRateScore > rhsWinRateScore;
+                }
+                if (lhs.score != rhs.score) {
+                    return lhs.score > rhs.score;
+                }
+                return lhs.move.index() < rhs.move.index();
+            });
     }
 
     AnalysisResult estimateResult(
